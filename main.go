@@ -72,16 +72,16 @@ type WorkItemsBatchResponse struct {
 }
 
 type PBIResult struct {
-	ID           int    `json:"id"`
-	Title        string `json:"title"`
-	AssignedTo   string `json:"assignedTo"`
-	CreatedDate  string `json:"createdDate"`
-	TargetDate   string `json:"targetDate"`
-	ClosedDate   string `json:"closedDate"`
-	OTDStatus    string `json:"otdStatus"`    // "no_prazo" | "atrasado" | "sem_target"
-	DriftDays    int    `json:"driftDays"`    // closed - target (positivo = atrasado)
-	CycleDays    int    `json:"cycleDays"`    // closed - created
-	HasTargetDate bool  `json:"hasTargetDate"`
+	ID            int    `json:"id"`
+	Title         string `json:"title"`
+	AssignedTo    string `json:"assignedTo"`
+	CreatedDate   string `json:"createdDate"`
+	TargetDate    string `json:"targetDate"`
+	ClosedDate    string `json:"closedDate"`
+	OTDStatus     string `json:"otdStatus"` // "no_prazo" | "atrasado" | "sem_target"
+	DriftDays     int    `json:"driftDays"` // closed - target (positivo = atrasado)
+	CycleDays     int    `json:"cycleDays"` // closed - created
+	HasTargetDate bool   `json:"hasTargetDate"`
 }
 
 type MembersRequest struct {
@@ -215,7 +215,7 @@ func runMembersWiql(org, project, pat string) ([]int, error) {
 	wiql := fmt.Sprintf(`SELECT [System.Id]
 FROM WorkItems
 WHERE [System.TeamProject] = '%s'
-    AND [System.WorkItemType] IN ('Development', 'Code Review', 'Test Execution')
+    AND [System.WorkItemType] IN ('Development', 'Test Execution')
     AND [System.ChangedDate] >= @today - 180
 ORDER BY [System.ChangedDate] DESC`, esc(project))
 
@@ -296,13 +296,6 @@ func buildWiql(req QueryRequest) string {
 		entregaClause = "\n        AND [Source].[Custom.ENTREGA_DE_VALOR] = 'SIM'"
 	}
 
-	// Azure DevOps usa "date precision" por padrão: não aceita hora junto da
-	// data no WIQL. Pra pegar o dia inteiro do "até", soma 1 dia e usa "<".
-	dateToExclusive := req.DateTo
-	if t, ok := parseDate(req.DateTo + "T00:00:00Z"); ok {
-		dateToExclusive = t.AddDate(0, 0, 1).Format("2006-01-02")
-	}
-
 	return fmt.Sprintf(`SELECT
     [System.Id],
     [System.WorkItemType],
@@ -317,8 +310,8 @@ WHERE
         [Source].[System.TeamProject] = '%s'
         AND [Source].[System.WorkItemType] = 'PBI'
         AND [Source].[System.State] = 'Closed'
-        AND [Source].[Microsoft.VSTS.Common.ClosedDate] >= '%s'
-        AND [Source].[Microsoft.VSTS.Common.ClosedDate] < '%s'%s
+        AND [Source].[Microsoft.VSTS.Common.ClosedDate] >= '%sT00:00:00.0000000'
+        AND [Source].[Microsoft.VSTS.Common.ClosedDate] <= '%sT00:00:00.0000000'%s
     )
     AND (
         [Target].[System.TeamProject] = '%s'
@@ -326,8 +319,10 @@ WHERE
         AND [Target].[System.AssignedTo] = '%s'
         AND [Target].[System.State] = 'Closed'
     )
+ORDER BY [Custom.OTD_AnyTools],
+    [System.Id]
 MODE (MustContain)`,
-		esc(req.Project), esc(req.DateFrom), esc(dateToExclusive), entregaClause,
+		esc(req.Project), esc(req.DateFrom), esc(req.DateTo), entregaClause,
 		esc(req.Project), esc(req.AssignedTo))
 }
 

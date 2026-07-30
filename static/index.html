@@ -106,7 +106,7 @@
 
   .summary{
     display:grid;
-    grid-template-columns: repeat(4, 1fr);
+    grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
     gap: 12px;
     margin: 28px 0;
   }
@@ -140,8 +140,22 @@
   }
   tbody tr:hover{ background: var(--panel-2); }
   td.id{ font-family:'IBM Plex Mono', monospace; color: var(--text-dim); }
+  td.id a{ color: var(--accent); text-decoration: none; }
+  td.id a:hover{ text-decoration: underline; }
   td.title{ max-width: 320px; }
   td.date{ font-family:'IBM Plex Mono', monospace; font-size: 12px; color: var(--text-dim); white-space: nowrap; }
+
+  .table-toolbar{
+    display:flex; align-items:center; justify-content:space-between; gap:12px;
+    margin-bottom: 16px; flex-wrap: wrap;
+  }
+  .table-toolbar input[type=text]{ max-width: 280px; }
+  .pagination{
+    display:flex; align-items:center; justify-content:center; gap:16px;
+    margin-top: 16px;
+  }
+  .page-info{ font-size:12px; color: var(--text-dim); font-family:'IBM Plex Mono', monospace; }
+  .page-btn:disabled{ opacity:.4; cursor:not-allowed; }
 
   .badge{
     display:inline-block;
@@ -322,7 +336,7 @@
     <form class="filters" id="filters">
       <div>
         <label for="org">Organização</label>
-        <input type="text" id="org" placeholder="db1group" required>
+        <input type="text" id="org" value="db1global" placeholder="db1global" required>
       </div>
       <div>
         <label for="project">Team Project</label>
@@ -417,10 +431,15 @@ function renderGauge(item){
 
 let targetPct = 80;
 let lastItems = [];
+let lastOrg = '';
+let lastProject = '';
+let searchQuery = '';
+let currentPage = 1;
+const PAGE_SIZE = 20;
 
 function renderAll(){
   const resultsArea = $('resultsArea');
-  resultsArea.innerHTML = renderSummary(lastItems) + renderCharts(lastItems) + renderTable(lastItems);
+  resultsArea.innerHTML = renderSummary(lastItems) + renderCharts(lastItems) + renderTable();
   const targetInput = document.getElementById('targetPctInput');
   if(targetInput){
     targetInput.addEventListener('change', () => {
@@ -431,6 +450,15 @@ function renderAll(){
       }
     });
   }
+  const searchInput = $('pbiSearchInput');
+  if(searchInput){
+    searchInput.addEventListener('input', () => {
+      searchQuery = searchInput.value;
+      currentPage = 1;
+      refreshTable();
+    });
+  }
+  wirePaginationButtons();
 }
 
 function groupByMonth(items){
@@ -552,20 +580,51 @@ function renderSummary(items){
   const ok = items.filter(i => i.otdStatus === 'no_prazo').length;
   const late = items.filter(i => i.otdStatus === 'atrasado').length;
   const semTarget = items.filter(i => i.otdStatus === 'sem_target').length;
+  const comTarget = ok + late;
+  const otdPct = comTarget > 0 ? (ok / comTarget * 100).toFixed(1) + '%' : '—';
   return `
   <div class="summary">
     <div class="card"><div class="n">${total}</div><div class="l">Total de PBIs</div></div>
     <div class="card ok"><div class="n">${ok}</div><div class="l">No prazo</div></div>
     <div class="card late"><div class="n">${late}</div><div class="l">Atrasados</div></div>
     <div class="card neutral"><div class="n">${semTarget}</div><div class="l">Sem target date</div></div>
+    <div class="card ok"><div class="n">${otdPct}</div><div class="l">% OTD (no prazo ÷ com target)</div></div>
   </div>`;
 }
 
-function renderTable(items){
-  const rows = items.map(item => {
+function pbiUrl(id){
+  if(!lastOrg || !lastProject) return null;
+  return `https://dev.azure.com/${encodeURIComponent(lastOrg)}/${encodeURIComponent(lastProject)}/_workitems/edit/${id}`;
+}
+
+function filteredItems(){
+  const q = searchQuery.trim().toLowerCase();
+  if(!q) return lastItems;
+  return lastItems.filter(it =>
+    String(it.id).includes(q) || (it.title || '').toLowerCase().includes(q)
+  );
+}
+
+function paginate(items){
+  const totalPages = Math.max(1, Math.ceil(items.length / PAGE_SIZE));
+  if(currentPage > totalPages) currentPage = totalPages;
+  if(currentPage < 1) currentPage = 1;
+  const start = (currentPage - 1) * PAGE_SIZE;
+  return { pageItems: items.slice(start, start + PAGE_SIZE), totalPages, total: items.length };
+}
+
+function renderTableRows(items){
+  if(items.length === 0){
+    return `<tr><td colspan="9" class="empty" style="padding:30px 0;">Nenhum PBI encontrado com esse filtro.</td></tr>`;
+  }
+  return items.map(item => {
     const s = statusMeta(item.otdStatus);
+    const url = pbiUrl(item.id);
+    const idCell = url
+      ? `<a href="${escapeHtml(url)}" target="_blank" rel="noopener">#${item.id}</a>`
+      : `#${item.id}`;
     return `<tr>
-      <td class="id">#${item.id}</td>
+      <td class="id">${idCell}</td>
       <td class="title">${escapeHtml(item.title)}</td>
       <td>${escapeHtml(item.assignedTo || '—')}</td>
       <td class="date">${fmtDate(item.createdDate)}</td>
@@ -576,18 +635,55 @@ function renderTable(items){
       <td><span class="badge ${s.cls}">${s.label}</span></td>
     </tr>`;
   }).join('');
+}
+
+function renderPagination(page, totalPages){
+  if(totalPages <= 1) return '';
+  return `
+    <button type="button" class="btn-ghost page-btn" data-dir="prev" ${page<=1?'disabled':''}>‹ Anterior</button>
+    <span class="page-info">Página ${page} de ${totalPages}</span>
+    <button type="button" class="btn-ghost page-btn" data-dir="next" ${page>=totalPages?'disabled':''}>Próxima ›</button>
+  `;
+}
+
+function wirePaginationButtons(){
+  document.querySelectorAll('.page-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      currentPage += btn.getAttribute('data-dir') === 'next' ? 1 : -1;
+      refreshTable();
+    });
+  });
+}
+
+function refreshTable(){
+  const { pageItems, totalPages, total } = paginate(filteredItems());
+  $('tableBody').innerHTML = renderTableRows(pageItems);
+  $('resultCount').textContent = `${total} PBI(s)`;
+  $('paginationControls').innerHTML = renderPagination(currentPage, totalPages);
+  wirePaginationButtons();
+}
+
+function renderTable(){
+  const { pageItems, totalPages, total } = paginate(filteredItems());
 
   return `
-  <div class="panel" style="margin-top:20px; overflow-x:auto;">
-    <table>
-      <thead>
-        <tr>
-          <th>ID</th><th>Título</th><th>Responsável</th><th>Criado</th>
-          <th>Target</th><th>Fechado</th><th>Drift</th><th>Ciclo</th><th>Status</th>
-        </tr>
-      </thead>
-      <tbody>${rows}</tbody>
-    </table>
+  <div class="panel" style="margin-top:20px;">
+    <div class="table-toolbar">
+      <input type="text" id="pbiSearchInput" placeholder="Filtrar por ID ou título..." value="${escapeHtml(searchQuery)}">
+      <span class="hint" id="resultCount">${total} PBI(s)</span>
+    </div>
+    <div style="overflow-x:auto;">
+      <table>
+        <thead>
+          <tr>
+            <th>ID</th><th>Título</th><th>Responsável</th><th>Criado</th>
+            <th>Target</th><th>Fechado</th><th>Drift</th><th>Ciclo</th><th>Status</th>
+          </tr>
+        </thead>
+        <tbody id="tableBody">${renderTableRows(pageItems)}</tbody>
+      </table>
+    </div>
+    <div class="pagination" id="paginationControls">${renderPagination(currentPage, totalPages)}</div>
   </div>`;
 }
 
@@ -636,11 +732,15 @@ async function buscar(){
 
     const items = data.items || [];
     lastItems = items;
+    lastOrg = org;
+    lastProject = project;
+    searchQuery = '';
+    currentPage = 1;
     if(items.length === 0){
       resultsArea.innerHTML = `<div class="empty"><div class="big">·</div>Nenhum PBI encontrado com esses filtros.</div>`;
     } else {
-      // ordena por drift (piores primeiro)
-      items.sort((a,b) => (b.driftDays||0) - (a.driftDays||0));
+      // ordena por data de fechamento (mais recente primeiro)
+      items.sort((a,b) => new Date(b.closedDate) - new Date(a.closedDate));
       renderAll();
     }
   } catch(e){
