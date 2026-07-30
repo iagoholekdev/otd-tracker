@@ -76,11 +76,14 @@ jobs:
       - name: Criar tag (se disparado manualmente e ela não existir)
         if: github.event_name == 'workflow_dispatch'
         run: |
-          if ! git rev-parse "${{ steps.tag.outputs.tag }}" >/dev/null 2>&1; then
+          TAG="${{ steps.tag.outputs.tag }}"
+          if git ls-remote --exit-code --tags origin "refs/tags/$TAG" >/dev/null 2>&1; then
+            echo "Tag $TAG já existe no remoto, seguindo com ela."
+          else
             git config user.name "github-actions"
             git config user.email "github-actions@github.com"
-            git tag "${{ steps.tag.outputs.tag }}"
-            git push origin "${{ steps.tag.outputs.tag }}"
+            git tag "$TAG"
+            git push origin "$TAG"
           fi
 
       - name: Publicar release
